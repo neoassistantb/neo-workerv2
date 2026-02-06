@@ -3,9 +3,9 @@ FROM mcr.microsoft.com/playwright:v1.58.1-jammy
 
 WORKDIR /app
 
-# ✅ Ensure curl exists for HEALTHCHECK (Render kills unhealthy containers)
+# System deps (no curl needed)
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends curl ca-certificates \
+  && apt-get install -y --no-install-recommends ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
 # Copy package files
@@ -24,9 +24,5 @@ RUN npx tsc
 # Expose port
 EXPOSE 3000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-  CMD curl -fsS http://localhost:3000/health || exit 1
-
-# Start
+# 🚀 Start worker
 CMD ["node", "dist/worker.js"]
