@@ -696,9 +696,27 @@ async function main() {
     res.json({ status: "ok", ...manager.getStatus() });
   });
 
-  // ✅ RELAY ENDPOINT: Supabase Edge -> Worker -> Crawler
+    // ✅ RELAY ENDPOINT: Supabase Edge -> Worker -> Crawler
   app.post("/relay/crawl", async (req: Request, res: Response) => {
     const { url, sessionId } = req.body || {};
+    const requestId = sessionId ? String(sessionId) : `req-${Date.now()}`;
+    const sanitizedHeaders = {
+      "content-type": req.headers["content-type"],
+      "user-agent": req.headers["user-agent"],
+      "x-forwarded-for": req.headers["x-forwarded-for"],
+      "x-request-id": req.headers["x-request-id"],
+    };
+
+    console.log("[RELAY] Incoming request", {
+      requestId,
+      method: req.method,
+      path: req.path,
+      ip: req.ip,
+      headers: sanitizedHeaders,
+      body: req.body || null,
+      hasCrawlerSecret: Boolean(CRAWLER_SECRET),
+      crawlerBaseUrl: CRAWLER_BASE_URL,
+    });
 
     if (!CRAWLER_SECRET) {
       console.log("[RELAY] Missing CRAWLER_SECRET env");
@@ -710,31 +728,54 @@ async function main() {
     }
 
     const crawlUrl = `${CRAWLER_BASE_URL}/crawl`;
-    console.log("[RELAY] ->", crawlUrl, { sessionId, url });
+    console.log("[RELAY] ->", crawlUrl, {
+      requestId,
+      sessionId,
+      url,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${CRAWLER_SECRET ? "******" : ""}`,
+        "x-crawler-token": CRAWLER_SECRET ? "******" : "",
+        "x-request-id": requestId,
+      },
+      payload: { url, site_id: sessionId },
+    });
 
     try {
+      const start = Date.now();
       const r = await fetch(crawlUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${CRAWLER_SECRET}`,
           "x-crawler-token": CRAWLER_SECRET,
-          "x-request-id": String(sessionId),
+          "x-request-id": requestId,
         },
         body: JSON.stringify({ url, site_id: sessionId }),
       });
+      const durationMs = Date.now() - start;
 
       const txt = await r.text().catch(() => "");
-      console.log("[RELAY] <-", r.status, txt.slice(0, 180));
+      console.log("[RELAY] <-", {
+        requestId,
+        status: r.status,
+        durationMs,
+        responseHeaders: {
+          "content-type": r.headers.get("content-type"),
+          "x-request-id": r.headers.get("x-request-id"),
+        },
+        responseBodyPreview: txt.slice(0, 500),
+      });
 
       res.status(r.status);
       res.setHeader("Content-Type", "application/json");
       return res.send(txt);
     } catch (e) {
-      console.log("[RELAY] fetch failed:", e);
+      console.log("[RELAY] fetch failed:", { requestId, error: e instanceof Error ? e.message : String(e) });
       return res.status(502).json({ success: false, error: "Relay failed to reach crawler" });
     }
   });
+
 
   // --- ROUTES (не пипаме логиката) ---
   app.post("/prepare-session", async (req, res) => {
