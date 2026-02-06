@@ -2,10 +2,11 @@
  * NEO WORKER v4.0 - Hot Session Architecture
  *
  * ENDPOINTS:
- * - POST /prepare-session - подготвя hot session (извиква се от crawler)
+ * - POST /prepare-session - подготвя hot session (извиква се от crawler / trainer)
  * - POST /execute - изпълнява действие (извиква се от neo-agent-core)
  * - POST /interact - legacy endpoint за backwards compatibility
- * - POST /relay/crawl - RELAY към browser crawler (извиква се от Supabase Edge)
+ *
+ * ✅ IMPORTANT: Worker-ът е executor. НЕ е relay към crawler.
  */
 
 import { chromium, Browser, Page, BrowserContext } from "playwright";
@@ -15,13 +16,6 @@ const PORT = parseInt(process.env.PORT || "3000");
 
 // Auth for worker endpoints (called by Supabase Edge / agent-core)
 const WORKER_SECRET = process.env.NEO_WORKER_SECRET || "change-me-in-production";
-
-// Relay target (Render crawler)
-const CRAWLER_BASE_URL = (process.env.BROWSER_CRAWLER_URL || "https://neo-browser-crawler-w7am.onrender.com").replace(
-  /\/+$/,
-  ""
-);
-const CRAWLER_SECRET = process.env.CRAWLER_SECRET || ""; // neo_super_secret_2026
 
 interface SiteMapButton {
   text: string;
@@ -128,7 +122,7 @@ class HotSessionManager {
     console.log(
       `[PREPARE] Buttons: ${siteMap.buttons?.length || 0}, Forms: ${siteMap.forms?.length || 0}, Prices: ${
         siteMap.prices?.length || 0
-      }`
+      }`,
     );
 
     try {
@@ -172,7 +166,7 @@ class HotSessionManager {
   }
 
   async execute(
-    request: ExecuteRequest
+    request: ExecuteRequest,
   ): Promise<{
     success: boolean;
     message: string;
@@ -241,7 +235,7 @@ class HotSessionManager {
   }
 
   async interact(
-    request: InteractRequest
+    request: InteractRequest,
   ): Promise<{
     success: boolean;
     message: string;
@@ -325,7 +319,7 @@ class HotSessionManager {
   private matchAction(
     keywords: string[],
     siteMap: SiteMap,
-    data?: ExecuteRequest["data"]
+    data?: ExecuteRequest["data"],
   ): {
     type: "fill_form" | "click" | "return_prices" | "return_contact" | "navigate" | "observe";
     form?: SiteMapForm;
@@ -345,14 +339,14 @@ class HotSessionManager {
           (field) =>
             field.type === "date" ||
             PATTERNS.check_in.some((k) => field.keywords?.includes(k)) ||
-            PATTERNS.check_out.some((k) => field.keywords?.includes(k))
-        )
+            PATTERNS.check_out.some((k) => field.keywords?.includes(k)),
+        ),
       );
 
       if (form) return { type: "fill_form", form, data };
 
       const bookBtn = siteMap.buttons?.find(
-        (b) => b.action_type === "booking" || PATTERNS.booking.some((p) => b.text.toLowerCase().includes(p))
+        (b) => b.action_type === "booking" || PATTERNS.booking.some((p) => b.text.toLowerCase().includes(p)),
       );
 
       if (bookBtn) return { type: "click", selector: bookBtn.selector, buttonText: bookBtn.text };
@@ -364,7 +358,7 @@ class HotSessionManager {
 
     if (PATTERNS.contact.some((p) => joined.includes(p))) {
       const contactBtn = siteMap.buttons?.find(
-        (b) => b.action_type === "contact" || PATTERNS.contact.some((p) => b.text.toLowerCase().includes(p))
+        (b) => b.action_type === "contact" || PATTERNS.contact.some((p) => b.text.toLowerCase().includes(p)),
       );
       if (contactBtn) return { type: "click", selector: contactBtn.selector, buttonText: contactBtn.text };
       return { type: "return_contact" };
@@ -377,7 +371,7 @@ class HotSessionManager {
 
     if (PATTERNS.search.some((p) => joined.includes(p))) {
       const searchBtn = siteMap.buttons?.find(
-        (b) => b.action_type === "submit" || PATTERNS.search.some((p) => b.text.toLowerCase().includes(p))
+        (b) => b.action_type === "submit" || PATTERNS.search.some((p) => b.text.toLowerCase().includes(p)),
       );
       if (searchBtn) return { type: "click", selector: searchBtn.selector, buttonText: searchBtn.text };
     }
@@ -486,7 +480,10 @@ class HotSessionManager {
         let phone = null;
         for (const pattern of phonePatterns) {
           const match = text.match(pattern);
-          if (match) { phone = match[0]; break; }
+          if (match) {
+            phone = match[0];
+            break;
+          }
         }
 
         const email = text.match(/[\w.-]+@[\w.-]+\.\w+/)?.[0];
@@ -568,9 +565,7 @@ class HotSessionManager {
           return `${el.tagName.toLowerCase()}:nth-of-type(${idx + 1})`;
         };
 
-        const buttons = Array.from(
-          document.querySelectorAll("button, a[href], [role='button'], input[type='submit'], .btn")
-        )
+        const buttons = Array.from(document.querySelectorAll("button, a[href], [role='button'], input[type='submit'], .btn"))
           .filter(isVisible)
           .slice(0, 25)
           .map((el, i) => ({
@@ -696,88 +691,7 @@ async function main() {
     res.json({ status: "ok", ...manager.getStatus() });
   });
 
-    // ✅ RELAY ENDPOINT: Supabase Edge -> Worker -> Crawler
-  app.post("/relay/crawl", async (req: Request, res: Response) => {
-    const { url, sessionId } = req.body || {};
-    const requestId = sessionId ? String(sessionId) : `req-${Date.now()}`;
-    const sanitizedHeaders = {
-      "content-type": req.headers["content-type"],
-      "user-agent": req.headers["user-agent"],
-      "x-forwarded-for": req.headers["x-forwarded-for"],
-      "x-request-id": req.headers["x-request-id"],
-    };
-
-    console.log("[RELAY] Incoming request", {
-      requestId,
-      method: req.method,
-      path: req.path,
-      ip: req.ip,
-      headers: sanitizedHeaders,
-      body: req.body || null,
-      hasCrawlerSecret: Boolean(CRAWLER_SECRET),
-      crawlerBaseUrl: CRAWLER_BASE_URL,
-    });
-
-    if (!CRAWLER_SECRET) {
-      console.log("[RELAY] Missing CRAWLER_SECRET env");
-      return res.status(500).json({ success: false, error: "CRAWLER_SECRET missing on worker" });
-    }
-
-    if (!url || !sessionId) {
-      return res.status(400).json({ success: false, error: "Missing url or sessionId" });
-    }
-
-    const crawlUrl = `${CRAWLER_BASE_URL}/crawl`;
-    console.log("[RELAY] ->", crawlUrl, {
-      requestId,
-      sessionId,
-      url,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${CRAWLER_SECRET ? "******" : ""}`,
-        "x-crawler-token": CRAWLER_SECRET ? "******" : "",
-        "x-request-id": requestId,
-      },
-      payload: { url, site_id: sessionId },
-    });
-
-    try {
-      const start = Date.now();
-      const r = await fetch(crawlUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${CRAWLER_SECRET}`,
-          "x-crawler-token": CRAWLER_SECRET,
-          "x-request-id": requestId,
-        },
-        body: JSON.stringify({ url, site_id: sessionId }),
-      });
-      const durationMs = Date.now() - start;
-
-      const txt = await r.text().catch(() => "");
-      console.log("[RELAY] <-", {
-        requestId,
-        status: r.status,
-        durationMs,
-        responseHeaders: {
-          "content-type": r.headers.get("content-type"),
-          "x-request-id": r.headers.get("x-request-id"),
-        },
-        responseBodyPreview: txt.slice(0, 500),
-      });
-
-      res.status(r.status);
-      res.setHeader("Content-Type", "application/json");
-      return res.send(txt);
-    } catch (e) {
-      console.log("[RELAY] fetch failed:", { requestId, error: e instanceof Error ? e.message : String(e) });
-      return res.status(502).json({ success: false, error: "Relay failed to reach crawler" });
-    }
-  });
-
-
-  // --- ROUTES (не пипаме логиката) ---
+  // --- ROUTES (executor only) ---
   app.post("/prepare-session", async (req, res) => {
     const { site_id, site_map } = req.body;
     if (!site_id || !site_map) return res.json({ success: false, error: "Missing site_id or site_map" });
