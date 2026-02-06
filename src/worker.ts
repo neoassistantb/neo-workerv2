@@ -772,7 +772,7 @@ async function main() {
     res.json({ success: true });
   });
 
-  app.listen(PORT, () => {
+  app.listen(PORT, "0.0.0.0", () => {
     console.log(`\n🚀 NEO Worker v4.0 (Hot Sessions)`);
     console.log(`   Port: ${PORT}`);
     console.log(`   Ready: ${manager.getStatus().ready}\n`);
