@@ -23,10 +23,6 @@ const CRAWLER_BASE_URL = (process.env.BROWSER_CRAWLER_URL || "https://neo-browse
 );
 const CRAWLER_SECRET = process.env.CRAWLER_SECRET || ""; // neo_super_secret_2026
 
-// ═══════════════════════════════════════════════════════════════
-// TYPES
-// ═══════════════════════════════════════════════════════════════
-
 interface SiteMapButton {
   text: string;
   selector: string;
@@ -86,10 +82,6 @@ interface InteractRequest {
   };
 }
 
-// ═══════════════════════════════════════════════════════════════
-// UNIVERSAL KEYWORD PATTERNS
-// ═══════════════════════════════════════════════════════════════
-
 const PATTERNS = {
   booking: ["резерв", "book", "запази", "наличност", "свободн", "availability", "reserve", "нощувк"],
   check_in: ["от", "check-in", "checkin", "настаняване", "пристигане", "arrival", "from", "start"],
@@ -101,19 +93,14 @@ const PATTERNS = {
   rooms: ["стая", "стаи", "room", "rooms", "апартамент", "suite", "настаняване"],
 };
 
-// ═══════════════════════════════════════════════════════════════
-// HOT SESSION MANAGER
-// ═══════════════════════════════════════════════════════════════
-
 class HotSessionManager {
   private browser: Browser | null = null;
   private sessions: Map<string, HotSession> = new Map();
   private isReady = false;
 
-  // Config
   private readonly MAX_SESSIONS = 50;
-  private readonly SESSION_TIMEOUT = 30 * 60 * 1000; // 30 minutes
-  private readonly CLEANUP_INTERVAL = 5 * 60 * 1000; // 5 minutes
+  private readonly SESSION_TIMEOUT = 30 * 60 * 1000;
+  private readonly CLEANUP_INTERVAL = 5 * 60 * 1000;
 
   async start(): Promise<void> {
     console.log("[WORKER] Starting browser...");
@@ -124,16 +111,10 @@ class HotSessionManager {
     });
 
     this.isReady = true;
-
-    // Periodic cleanup of inactive sessions
     setInterval(() => this.cleanupSessions(), this.CLEANUP_INTERVAL);
 
     console.log("[WORKER] ✓ Ready!");
   }
-
-  // ─────────────────────────────────────────────────────────────
-  // PREPARE SESSION - Called by Crawler after training
-  // ─────────────────────────────────────────────────────────────
 
   async prepareSession(siteId: string, siteMap: SiteMap): Promise<boolean> {
     if (!this.isReady || !this.browser) {
@@ -151,15 +132,12 @@ class HotSessionManager {
     );
 
     try {
-      // Close old session if exists
       await this.closeSession(siteId);
 
-      // Check session limit
       if (this.sessions.size >= this.MAX_SESSIONS) {
         this.evictOldestSession();
       }
 
-      // Create new context and page
       const context = await this.browser.newContext({
         viewport: { width: 1366, height: 768 },
         userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
@@ -170,16 +148,12 @@ class HotSessionManager {
 
       const page = await context.newPage();
 
-      // Navigate to site
       let url = siteMap.url;
       if (!url.startsWith("http")) url = "https://" + url;
 
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20000 });
-
-      // Wait a bit for JS to load
       await page.waitForTimeout(1500);
 
-      // Save session
       this.sessions.set(siteId, {
         page,
         context,
@@ -197,10 +171,6 @@ class HotSessionManager {
     }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // EXECUTE - Main action method (called by neo-agent-core)
-  // ─────────────────────────────────────────────────────────────
-
   async execute(
     request: ExecuteRequest
   ): Promise<{
@@ -213,10 +183,7 @@ class HotSessionManager {
 
     if (!session) {
       console.log(`[EXECUTE] No session for ${site_id}`);
-      return {
-        success: false,
-        message: "Няма активна сесия. Моля, изчакайте зареждане.",
-      };
+      return { success: false, message: "Няма активна сесия. Моля, изчакайте зареждане." };
     }
 
     const startTime = Date.now();
@@ -227,49 +194,36 @@ class HotSessionManager {
     if (data) console.log(`[EXECUTE] Data:`, data);
 
     try {
-      // Check if page is still valid
       try {
         await session.page.evaluate(() => true);
       } catch {
         console.log(`[EXECUTE] Page closed, recreating...`);
         await this.prepareSession(site_id, session.siteMap);
         const newSession = this.sessions.get(site_id);
-        if (!newSession) {
-          return { success: false, message: "Грешка при възстановяване на сесията" };
-        }
+        if (!newSession) return { success: false, message: "Грешка при възстановяване на сесията" };
       }
 
-      // 1. MATCH ACTION from keywords
       const action = this.matchAction(keywords, session.siteMap, data);
       console.log(`[EXECUTE] Action: ${action.type}`);
 
-      // 2. EXECUTE ACTION
       let result: { message: string; observation?: Record<string, unknown> };
 
       switch (action.type) {
         case "fill_form":
           result = await this.fillForm(session.page, action.form!, action.data!);
           break;
-
         case "click":
           result = await this.clickButton(session.page, action.selector!, action.buttonText);
           break;
-
         case "return_prices":
-          result = {
-            message: this.formatPrices(session.siteMap.prices),
-            observation: { prices: session.siteMap.prices },
-          };
+          result = { message: this.formatPrices(session.siteMap.prices), observation: { prices: session.siteMap.prices } };
           break;
-
         case "return_contact":
           result = await this.getContactInfo(session.page);
           break;
-
         case "navigate":
           result = await this.navigateTo(session.page, action.url!);
           break;
-
         case "observe":
         default:
           result = await this.observeCurrentState(session.page);
@@ -278,7 +232,6 @@ class HotSessionManager {
 
       const elapsed = Date.now() - startTime;
       console.log(`[EXECUTE] ✓ Done in ${elapsed}ms: ${result.message.slice(0, 50)}`);
-
       return { success: true, ...result };
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
@@ -286,10 +239,6 @@ class HotSessionManager {
       return { success: false, message: "Грешка при изпълнение" };
     }
   }
-
-  // ─────────────────────────────────────────────────────────────
-  // LEGACY INTERACT - For backwards compatibility
-  // ─────────────────────────────────────────────────────────────
 
   async interact(
     request: InteractRequest
@@ -305,16 +254,12 @@ class HotSessionManager {
 
     logs.push(`[LEGACY] Session: ${session_id}`);
 
-    // Check if we have a hot session
     let session = this.sessions.get(session_id);
 
-    // If no hot session, create one on-the-fly (slower, but backwards compatible)
     if (!session) {
       logs.push(`[LEGACY] No hot session, creating...`);
 
-      if (!this.browser) {
-        return { success: false, message: "Worker не е готов", logs };
-      }
+      if (!this.browser) return { success: false, message: "Worker не е готов", logs };
 
       try {
         const context = await this.browser.newContext({
@@ -335,7 +280,6 @@ class HotSessionManager {
           await page.waitForTimeout(1500);
         }
 
-        // Create minimal siteMap from page observation
         const observation = await this.observeDOM(page);
 
         const siteMap: SiteMap = {
@@ -347,18 +291,11 @@ class HotSessionManager {
             keywords: b.text.toLowerCase().split(/\s+/),
             action_type: this.detectButtonType(b.text),
           })),
-          forms: [], // Will be detected dynamically
+          forms: [],
           prices: observation.prices.map((p) => ({ text: p, context: "" })),
         };
 
-        session = {
-          page,
-          context,
-          siteMap,
-          lastActivity: Date.now(),
-          currentUrl: page.url(),
-        };
-
+        session = { page, context, siteMap, lastActivity: Date.now(), currentUrl: page.url() };
         this.sessions.set(session_id, session);
         logs.push(`[LEGACY] Session created`);
       } catch (error) {
@@ -367,20 +304,13 @@ class HotSessionManager {
       }
     }
 
-    // Extract keywords from message
     const keywords = user_message
       .toLowerCase()
       .replace(/[,.!?;:()[\]{}""'']/g, " ")
       .split(/\s+/)
       .filter((w) => w.length > 2);
 
-    // Execute using new system
-    const result = await this.execute({
-      site_id: session_id,
-      keywords,
-      data: booking_data,
-    });
-
+    const result = await this.execute({ site_id: session_id, keywords, data: booking_data });
     logs.push(`[LEGACY] Result: ${result.success ? "success" : "failed"}`);
 
     return {
@@ -391,10 +321,6 @@ class HotSessionManager {
       logs,
     };
   }
-
-  // ─────────────────────────────────────────────────────────────
-  // ACTION MATCHING - No AI, just patterns
-  // ─────────────────────────────────────────────────────────────
 
   private matchAction(
     keywords: string[],
@@ -410,12 +336,10 @@ class HotSessionManager {
   } {
     const joined = keywords.join(" ").toLowerCase();
 
-    // 1. BOOKING - if has dates or booking keywords
     const hasBookingKeyword = PATTERNS.booking.some((p) => joined.includes(p));
     const hasDates = data?.check_in || data?.check_out;
 
     if (hasBookingKeyword || hasDates) {
-      // Find form with date fields
       const form = siteMap.forms?.find((f) =>
         f.fields?.some(
           (field) =>
@@ -425,57 +349,39 @@ class HotSessionManager {
         )
       );
 
-      if (form) {
-        return { type: "fill_form", form, data };
-      }
+      if (form) return { type: "fill_form", form, data };
 
-      // No form - try to click booking button
       const bookBtn = siteMap.buttons?.find(
         (b) => b.action_type === "booking" || PATTERNS.booking.some((p) => b.text.toLowerCase().includes(p))
       );
 
-      if (bookBtn) {
-        return { type: "click", selector: bookBtn.selector, buttonText: bookBtn.text };
-      }
+      if (bookBtn) return { type: "click", selector: bookBtn.selector, buttonText: bookBtn.text };
     }
 
-    // 2. PRICES
     if (PATTERNS.prices.some((p) => joined.includes(p))) {
-      if (siteMap.prices && siteMap.prices.length > 0) {
-        return { type: "return_prices" };
-      }
+      if (siteMap.prices && siteMap.prices.length > 0) return { type: "return_prices" };
     }
 
-    // 3. CONTACT
     if (PATTERNS.contact.some((p) => joined.includes(p))) {
       const contactBtn = siteMap.buttons?.find(
         (b) => b.action_type === "contact" || PATTERNS.contact.some((p) => b.text.toLowerCase().includes(p))
       );
-      if (contactBtn) {
-        return { type: "click", selector: contactBtn.selector, buttonText: contactBtn.text };
-      }
+      if (contactBtn) return { type: "click", selector: contactBtn.selector, buttonText: contactBtn.text };
       return { type: "return_contact" };
     }
 
-    // 4. ROOMS
     if (PATTERNS.rooms.some((p) => joined.includes(p))) {
       const roomsBtn = siteMap.buttons?.find((b) => PATTERNS.rooms.some((p) => b.text.toLowerCase().includes(p)));
-      if (roomsBtn) {
-        return { type: "click", selector: roomsBtn.selector, buttonText: roomsBtn.text };
-      }
+      if (roomsBtn) return { type: "click", selector: roomsBtn.selector, buttonText: roomsBtn.text };
     }
 
-    // 5. SEARCH/CHECK button
     if (PATTERNS.search.some((p) => joined.includes(p))) {
       const searchBtn = siteMap.buttons?.find(
         (b) => b.action_type === "submit" || PATTERNS.search.some((p) => b.text.toLowerCase().includes(p))
       );
-      if (searchBtn) {
-        return { type: "click", selector: searchBtn.selector, buttonText: searchBtn.text };
-      }
+      if (searchBtn) return { type: "click", selector: searchBtn.selector, buttonText: searchBtn.text };
     }
 
-    // 6. Match specific button by keywords
     if (siteMap.buttons) {
       for (const btn of siteMap.buttons) {
         const btnKeywords = btn.keywords?.map((k) => k.toLowerCase()) || [];
@@ -485,54 +391,32 @@ class HotSessionManager {
       }
     }
 
-    // Default: observe
     return { type: "observe" };
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // ACTIONS
-  // ─────────────────────────────────────────────────────────────
-
-  private async fillForm(
-    page: Page,
-    form: SiteMapForm,
-    data: Record<string, unknown>
-  ): Promise<{ message: string; observation?: Record<string, unknown> }> {
+  private async fillForm(page: Page, form: SiteMapForm, data: Record<string, unknown>) {
     const actions: string[] = [];
-
-    if (!form.fields) {
-      return { message: "Формата няма полета" };
-    }
+    if (!form.fields) return { message: "Формата няма полета" };
 
     for (const field of form.fields) {
       let value: string | undefined;
-
-      // Match field to data by keywords
       const fieldKeywords = field.keywords?.map((k) => k.toLowerCase()) || [];
 
-      if (PATTERNS.check_in.some((k) => fieldKeywords.includes(k)) && (data as any).check_in) {
-        value = String((data as any).check_in);
-      } else if (PATTERNS.check_out.some((k) => fieldKeywords.includes(k)) && (data as any).check_out) {
-        value = String((data as any).check_out);
-      } else if (PATTERNS.guests.some((k) => fieldKeywords.includes(k)) && (data as any).guests) {
-        value = String((data as any).guests);
-      }
+      if (PATTERNS.check_in.some((k) => fieldKeywords.includes(k)) && (data as any).check_in) value = String((data as any).check_in);
+      else if (PATTERNS.check_out.some((k) => fieldKeywords.includes(k)) && (data as any).check_out) value = String((data as any).check_out);
+      else if (PATTERNS.guests.some((k) => fieldKeywords.includes(k)) && (data as any).guests) value = String((data as any).guests);
 
       if (value) {
         try {
-          // Try multiple selector strategies
           const selectors = [field.selector, `[name="${field.name}"]`, `#${field.name}`].filter(Boolean);
-
           let filled = false;
+
           for (const sel of selectors) {
             try {
               const el = await page.$(sel);
               if (el) {
-                if (field.type === "select") {
-                  await page.selectOption(sel, value, { timeout: 2000 });
-                } else {
-                  await page.fill(sel, value, { timeout: 2000 });
-                }
+                if (field.type === "select") await page.selectOption(sel, value, { timeout: 2000 });
+                else await page.fill(sel, value, { timeout: 2000 });
                 filled = true;
                 break;
               }
@@ -549,7 +433,6 @@ class HotSessionManager {
       }
     }
 
-    // Click submit button
     if (form.submit_button && actions.length > 0) {
       try {
         await page.click(form.submit_button, { timeout: 3000 });
@@ -561,20 +444,11 @@ class HotSessionManager {
     }
 
     const observation = await this.quickObserve(page);
-
-    return {
-      message: actions.length > 0 ? `Попълних: ${actions.join(", ")}` : "Не успях да попълня формата",
-      observation,
-    };
+    return { message: actions.length > 0 ? `Попълних: ${actions.join(", ")}` : "Не успях да попълня формата", observation };
   }
 
-  private async clickButton(
-    page: Page,
-    selector: string,
-    buttonText?: string
-  ): Promise<{ message: string; observation?: Record<string, unknown> }> {
+  private async clickButton(page: Page, selector: string, buttonText?: string) {
     try {
-      // Try multiple strategies
       const strategies = [
         async () => await page.click(selector, { timeout: 2000 }),
         async () => buttonText && (await page.click(`text="${buttonText}"`, { timeout: 2000 })),
@@ -597,35 +471,25 @@ class HotSessionManager {
     }
   }
 
-  private formatPrices(prices: SiteMap["prices"]): string {
+  private formatPrices(prices: SiteMap["prices"]) {
     if (!prices || prices.length === 0) return "Не намерих цени на сайта";
-
-    const formatted = prices
-      .slice(0, 5)
-      .map((p) => (p.context ? `${p.context}: ${p.text}` : p.text))
-      .join("; ");
-
+    const formatted = prices.slice(0, 5).map((p) => (p.context ? `${p.context}: ${p.text}` : p.text)).join("; ");
     return `Цени: ${formatted}`;
   }
 
-  private async getContactInfo(page: Page): Promise<{ message: string }> {
+  private async getContactInfo(page: Page) {
     try {
       const contact = await page.evaluate(() => {
         const text = document.body.innerText;
-
         const phonePatterns = [/(\+359|0)[\s-]?\d{2,3}[\s-]?\d{3}[\s-]?\d{3}/g, /(\+359|0)\d{9}/g];
 
         let phone = null;
         for (const pattern of phonePatterns) {
           const match = text.match(pattern);
-          if (match) {
-            phone = match[0];
-            break;
-          }
+          if (match) { phone = match[0]; break; }
         }
 
         const email = text.match(/[\w.-]+@[\w.-]+\.\w+/)?.[0];
-
         return { phone, email };
       });
 
@@ -639,13 +503,7 @@ class HotSessionManager {
     }
   }
 
-  private async navigateTo(
-    page: Page,
-    url: string
-  ): Promise<{
-    message: string;
-    observation?: Record<string, unknown>;
-  }> {
+  private async navigateTo(page: Page, url: string) {
     try {
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: 10000 });
       await page.waitForTimeout(1000);
@@ -656,20 +514,11 @@ class HotSessionManager {
     }
   }
 
-  private async observeCurrentState(
-    page: Page
-  ): Promise<{
-    message: string;
-    observation?: Record<string, unknown>;
-  }> {
+  private async observeCurrentState(page: Page) {
     const observation = await this.quickObserve(page);
 
     let message = `Страница: "${(observation as any).title}"`;
-
-    if ((observation as any).hasAvailability) {
-      message += ". Виждам информация за наличност.";
-    }
-
+    if ((observation as any).hasAvailability) message += ". Виждам информация за наличност.";
     if ((observation as any).prices && ((observation as any).prices as string[]).length > 0) {
       message += `. Цени: ${((observation as any).prices as string[]).slice(0, 3).join(", ")}`;
     }
@@ -701,12 +550,7 @@ class HotSessionManager {
     }
   }
 
-  private async observeDOM(
-    page: Page
-  ): Promise<{
-    buttons: Array<{ text: string; selector: string }>;
-    prices: string[];
-  }> {
+  private async observeDOM(page: Page) {
     try {
       return await page.evaluate(() => {
         const isVisible = (el: Element): boolean => {
@@ -754,10 +598,6 @@ class HotSessionManager {
     return "other";
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // SESSION MANAGEMENT
-  // ─────────────────────────────────────────────────────────────
-
   async closeSession(siteId: string): Promise<void> {
     const session = this.sessions.get(siteId);
     if (session) {
@@ -781,18 +621,14 @@ class HotSessionManager {
       }
     }
 
-    if (cleaned > 0) {
-      console.log(`[CLEANUP] Closed ${cleaned} inactive sessions`);
-    }
+    if (cleaned > 0) console.log(`[CLEANUP] Closed ${cleaned} inactive sessions`);
   }
 
   private evictOldestSession(): void {
     let oldest: { id: string; time: number } | null = null;
 
     for (const [id, session] of this.sessions) {
-      if (!oldest || session.lastActivity < oldest.time) {
-        oldest = { id, time: session.lastActivity };
-      }
+      if (!oldest || session.lastActivity < oldest.time) oldest = { id, time: session.lastActivity };
     }
 
     if (oldest) {
@@ -816,16 +652,10 @@ class HotSessionManager {
     for (const [id] of this.sessions) {
       await this.closeSession(id);
     }
-    if (this.browser) {
-      await this.browser.close();
-    }
+    if (this.browser) await this.browser.close();
     console.log("[SHUTDOWN] Done");
   }
 }
-
-// ═══════════════════════════════════════════════════════════════
-// EXPRESS SERVER
-// ═══════════════════════════════════════════════════════════════
 
 async function main() {
   const manager = new HotSessionManager();
@@ -833,9 +663,19 @@ async function main() {
   const app = express();
   app.use(express.json({ limit: "10mb" }));
 
+  // ✅ REQUEST LOGGER (ще видиш ВСЯКА заявка, even ако е 401)
+  app.use((req, res, next) => {
+    const start = Date.now();
+    res.on("finish", () => {
+      const ms = Date.now() - start;
+      console.log(`[REQ] ${req.method} ${req.path} -> ${res.statusCode} (${ms}ms)`);
+    });
+    next();
+  });
+
   // Auth middleware
   app.use((req, res, next) => {
-    if (req.path === "/" || req.path === "/health") return next();
+    if (req.path === "/" || req.path === "/health" || req.path === "/ping") return next();
 
     const token = req.headers.authorization?.replace("Bearer ", "");
     if (token !== WORKER_SECRET) {
@@ -845,22 +685,15 @@ async function main() {
     next();
   });
 
-  // Root
   app.get("/", (_, res) => {
-    res.json({
-      name: "NEO Worker",
-      version: "4.0.0",
-      type: "hot-session",
-      status: "running",
-    });
+    res.json({ name: "NEO Worker", version: "4.0.0", type: "hot-session", status: "running" });
   });
 
-  // Health check (НЕ ЗАВИСИ от browser)
+  // ✅ ultra-simple health endpoints (no auth)
+  app.get("/ping", (_, res) => res.status(200).send("ok"));
+
   app.get("/health", (_, res) => {
-    res.json({
-      status: "ok",
-      ...manager.getStatus(),
-    });
+    res.json({ status: "ok", ...manager.getStatus() });
   });
 
   // ✅ RELAY ENDPOINT: Supabase Edge -> Worker -> Crawler
@@ -906,9 +739,7 @@ async function main() {
   // --- ROUTES (не пипаме логиката) ---
   app.post("/prepare-session", async (req, res) => {
     const { site_id, site_map } = req.body;
-    if (!site_id || !site_map) {
-      return res.json({ success: false, error: "Missing site_id or site_map" });
-    }
+    if (!site_id || !site_map) return res.json({ success: false, error: "Missing site_id or site_map" });
 
     const success = await manager.prepareSession(site_id, site_map);
     res.json({ success, session_ready: success });
@@ -916,18 +747,14 @@ async function main() {
 
   app.post("/execute", async (req, res) => {
     const { site_id, keywords, data } = req.body;
-    if (!site_id || !Array.isArray(keywords)) {
-      return res.json({ success: false, message: "Invalid request" });
-    }
+    if (!site_id || !Array.isArray(keywords)) return res.json({ success: false, message: "Invalid request" });
 
     const result = await manager.execute({ site_id, keywords, data });
     res.json(result);
   });
 
   app.post("/close-session", async (req, res) => {
-    if (req.body.site_id) {
-      await manager.closeSession(req.body.site_id);
-    }
+    if (req.body.site_id) await manager.closeSession(req.body.site_id);
     res.json({ success: true });
   });
 
@@ -936,34 +763,26 @@ async function main() {
     if (!request.site_url || !request.user_message || !request.session_id) {
       return res.json({ success: false, message: "Missing fields", logs: [] });
     }
-
     const result = await manager.interact(request);
     res.json(result);
   });
 
   app.post("/close", async (req, res) => {
-    if (req.body.session_id) {
-      await manager.closeSession(req.body.session_id);
-    }
+    if (req.body.session_id) await manager.closeSession(req.body.session_id);
     res.json({ success: true });
   });
 
-  // 🚀 START SERVER FIRST
   app.listen(PORT, () => {
     console.log(`\n🚀 NEO Worker v4.0 (Hot Sessions)`);
     console.log(`   Port: ${PORT}`);
     console.log(`   Ready: ${manager.getStatus().ready}\n`);
   });
 
-  // 🔥 START BROWSER ASYNC (НЕ блокира boot)
   manager
     .start()
     .then(() => console.log("[BOOT] HotSessionManager ready"))
-    .catch((err) => {
-      console.error("[BOOT] HotSessionManager failed:", err);
-    });
+    .catch((err) => console.error("[BOOT] HotSessionManager failed:", err));
 
-  // Graceful shutdown
   process.on("SIGTERM", async () => {
     console.log("\n[SIGTERM] Shutting down...");
     await manager.shutdown();
